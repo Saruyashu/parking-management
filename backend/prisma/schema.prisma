@@ -1,0 +1,629 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ USER & AUTH ============
+
+enum UserRole {
+  OWNER
+  SUPERVISOR
+  ATTENDANT
+  CASHIER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+model User {
+  id            String      @id @default(uuid())
+  email         String      @unique
+  password_hash String
+  name          String
+  phone         String?
+  role          UserRole    @default(ATTENDANT)
+  status        UserStatus  @default(ACTIVE)
+  created_at    DateTime    @default(now())
+  updated_at    DateTime    @updatedAt
+
+  expenses_approved  Expense[]  @relation("ApprovedBy")
+  expenses_created   Expense[]  @relation("CreatedBy")
+  attendance_marked   Attendance[]
+  payroll_paid       Payroll[]
+
+  @@map("users")
+}
+
+// ============ PARKING LOT & SLOTS ============
+
+enum ZoneType {
+  COVERED
+  OPEN_AIR
+  BASEMENT
+  ROOFTOP
+}
+
+enum SlotCategory {
+  TWO_WHEELER
+  FOUR_WHEELER
+  EV
+  HANDICAPPED
+  PREMIUM
+}
+
+enum SlotStatus {
+  AVAILABLE
+  OCCUPIED
+  RESERVED
+  BLOCKED
+  MAINTENANCE
+}
+
+model ParkingLot {
+  id          String   @id @default(uuid())
+  name        String
+  address     String
+  total_slots Int
+  upi_id      String?
+  payee_name  String?
+  gstin       String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  zones Zone[]
+
+  @@map("parking_lots")
+}
+
+model Zone {
+  id            String    @id @default(uuid())
+  parking_lot_id String
+  name          String
+  type          ZoneType
+  created_at    DateTime  @default(now())
+
+  parking_lot ParkingLot @relation(fields: [parking_lot_id], references: [id])
+  slots      Slot[]
+
+  @@map("zones")
+}
+
+model Slot {
+  id           String      @id @default(uuid())
+  zone_id      String
+  slot_number  String
+  category     SlotCategory
+  status       SlotStatus  @default(AVAILABLE)
+  has_charger  Boolean     @default(false)
+  is_reserved  Boolean     @default(false)
+  created_at   DateTime    @default(now())
+  updated_at   DateTime    @updatedAt
+
+  zone         Zone        @relation(fields: [zone_id], references: [id])
+  vehicles     VehicleLog[]
+  monthly_pass MonthlyPass?
+}
+
+model PricingRule {
+  id              String        @id @default(uuid())
+  category        SlotCategory
+  hourly_rate     Int           // in paise
+  daily_rate      Int           // in paise
+  monthly_rate    Int           // in paise
+  event_rate      Int           // in paise
+  overnight_rate  Int           // in paise
+  corporate_rate  Int           // in paise
+  is_active       Boolean       @default(true)
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+
+  @@map("pricing_rules")
+}
+
+// ============ VEHICLES & LOGS ============
+
+enum VehicleCategory {
+  TWO_WHEELER
+  FOUR_WHEELER
+  EV
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  WALLET
+  MONTHLY_PASS
+  BANK_TRANSFER
+  CHEQUE
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  WAIVED
+  REFUNDED
+}
+
+model VehicleLog {
+  id              String        @id @default(uuid())
+  slot_id         String
+  vehicle_number  String
+  category        VehicleCategory
+  entry_time      DateTime      @default(now())
+  exit_time       DateTime?
+  duration_minutes Int?
+  rate_applied    Int           // in paise
+  total_amount    Int           // in paise
+  gst_amount      Int           // in paise
+  payment_mode    PaymentMode?
+  payment_status  PaymentStatus @default(PENDING)
+  ticket_id       String        @unique @default(uuid())
+  created_at      DateTime      @default(now())
+
+  slot            Slot          @relation(fields: [slot_id], references: [id])
+  invoice         Invoice?
+
+  @@map("vehicle_logs")
+}
+
+model Blacklist {
+  id            String      @id @default(uuid())
+  vehicle_number String     @unique
+  reason        String
+  created_by    String
+  created_at    DateTime    @default(now())
+
+  @@map("blacklist")
+}
+
+// ============ INVOICES ============
+
+model Invoice {
+  id              String      @id @default(uuid())
+  vehicle_log_id  String      @unique
+  invoice_number  String      @unique
+  gstin           String?
+  subtotal        Int         // in paise
+  gst_rate        Int         @default(18)
+  gst_amount      Int         // in paise
+  total           Int         // in paise
+  created_at      DateTime    @default(now())
+
+  vehicle_log     VehicleLog  @relation(fields: [vehicle_log_id], references: [id])
+
+  @@map("invoices")
+}
+
+// ============ EXPENSES ============
+
+enum ExpenseCategory {
+  STAFF_WAGES
+  UTILITIES
+  MAINTENANCE
+  SECURITY
+  RENT_LEASE
+  EQUIPMENT
+  VENDOR
+  TAX_LICENSE
+  SOFTWARE
+  INSURANCE
+  MISCELLANEOUS
+}
+
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  FLAGGED
+  REJECTED
+}
+
+enum RecurrenceFrequency {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+model Expense {
+  id                  String            @id @default(uuid())
+  date                DateTime
+  category             ExpenseCategory
+  sub_category         String?
+  vendor_id            String?
+  amount               Int               // in paise
+  payment_mode         PaymentMode
+  reference_number     String?
+  description          String?
+  attachments          String[]          // Firebase Storage URLs
+  is_recurring         Boolean           @default(false)
+  recurrence_frequency RecurrenceFrequency?
+  recurrence_end_date  DateTime?
+  status               ExpenseStatus     @default(PENDING)
+  flag_reason          String?
+  approved_by          String?
+  approved_at          DateTime?
+  created_by           String
+  created_at           DateTime          @default(now())
+  updated_at           DateTime          @updatedAt
+
+  vendor               Vendor?           @relation(fields: [vendor_id], references: [id])
+  approved_by_user     User?             @relation("ApprovedBy", fields: [approved_by], references: [id])
+  created_by_user      User              @relation("CreatedBy", fields: [created_by], references: [id])
+
+  @@map("expenses")
+}
+
+model Budget {
+  id              String          @id @default(uuid())
+  category        ExpenseCategory
+  monthly_limit   Int             // in paise
+  year            Int
+  month           Int
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  @@unique([category, year, month])
+  @@map("budgets")
+}
+
+// ============ CUSTOMERS & PASSES ============
+
+enum PassType {
+  INDIVIDUAL
+  FAMILY
+  CORPORATE
+}
+
+enum PassStatus {
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  CANCELLED
+}
+
+model Customer {
+  id            String      @id @default(uuid())
+  name          String
+  phone         String
+  email         String?
+  created_at    DateTime    @default(now())
+  updated_at    DateTime    @updatedAt
+
+  vehicles      CustomerVehicle[]
+  monthly_passes MonthlyPass[]
+
+  @@map("customers")
+}
+
+model CustomerVehicle {
+  id            String      @id @default(uuid())
+  customer_id   String
+  vehicle_number String     @unique
+  created_at    DateTime    @default(now())
+
+  customer      Customer    @relation(fields: [customer_id], references: [id])
+
+  @@map("customer_vehicles")
+}
+
+model CorporateAccount {
+  id              String      @id @default(uuid())
+  company_name    String
+  contact_person  String
+  phone           String
+  gstin           String?
+  negotiated_rate Int         // in paise per month per vehicle
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  monthly_passes  MonthlyPass[]
+
+  @@map("corporate_accounts")
+}
+
+model MonthlyPass {
+  id                String      @id @default(uuid())
+  customer_id       String
+  slot_id           String      @unique
+  pass_type         PassType
+  corporate_account_id String?
+  vehicle_number    String
+  start_date        DateTime
+  end_date          DateTime
+  amount            Int         // in paise
+  gst_amount        Int         // in paise
+  total             Int         // in paise
+  status            PassStatus  @default(ACTIVE)
+  auto_renew        Boolean    @default(false)
+  created_at         DateTime    @default(now())
+  updated_at         DateTime    @updatedAt
+
+  customer           Customer          @relation(fields: [customer_id], references: [id])
+  slot               Slot              @relation(fields: [slot_id], references: [id])
+  corporate_account  CorporateAccount? @relation(fields: [corporate_account_id], references: [id])
+  payments           PassPayment[]
+
+  @@map("monthly_passes")
+}
+
+model PassPayment {
+  id              String      @id @default(uuid())
+  monthly_pass_id String
+  amount          Int         // in paise
+  payment_mode    PaymentMode
+  payment_date    DateTime    @default(now())
+  transaction_ref String?
+  created_at      DateTime    @default(now())
+
+  monthly_pass    MonthlyPass @relation(fields: [monthly_pass_id], references: [id])
+
+  @@map("pass_payments")
+}
+
+// ============ STAFF & PAYROLL ============
+
+enum StaffRole {
+  ATTENDANT
+  SUPERVISOR
+  SECURITY
+  CLEANER
+  CASHIER
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACTUAL
+}
+
+enum Shift {
+  MORNING
+  AFTERNOON
+  NIGHT
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  HALF_DAY
+  LEAVE
+  NOT_MARKED
+}
+
+model Staff {
+  id              String          @id @default(uuid())
+  name            String
+  phone           String
+  aadhaar         String?
+  address         String?
+  photo_url       String?
+  role            StaffRole
+  employment_type EmploymentType
+  shift           Shift
+  bank_account    String?
+  ifsc_code       String?
+  wage_rate       Int             // in paise (monthly or daily)
+  is_monthly      Boolean         @default(true)
+  joining_date    DateTime
+  status          UserStatus      @default(ACTIVE)
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  attendances     Attendance[]
+  payrolls        Payroll[]
+
+  @@map("staff")
+}
+
+model Attendance {
+  id            String            @id @default(uuid())
+  staff_id      String
+  date          DateTime
+  shift         Shift
+  status        AttendanceStatus  @default(NOT_MARKED)
+  late_by_minutes Int?
+  marked_by    String
+  created_at    DateTime          @default(now())
+
+  staff         Staff             @relation(fields: [staff_id], references: [id])
+  marked_by_user User              @relation(fields: [marked_by], references: [id])
+
+  @@unique([staff_id, date, shift])
+  @@map("attendances")
+}
+
+model Advance {
+  id          String      @id @default(uuid())
+  staff_id    String
+  amount      Int         // in paise
+  date        DateTime
+  reason      String?
+  deducted    Boolean     @default(false)
+  payroll_id  String?
+  created_at  DateTime    @default(now())
+
+  @@map("advances")
+}
+
+model Payroll {
+  id              String      @id @default(uuid())
+  staff_id        String
+  month           Int
+  year            Int
+  working_days    Int
+  days_present    Int
+  basic_wage      Int         // in paise
+  overtime_hours  Int         @default(0)
+  overtime_amount Int         @default(0)
+  deductions      Int         @default(0)
+  advance_deducted Int       @default(0)
+  net_payable     Int         // in paise
+  status          String      @default("PENDING") // PENDING, PAID, LOCKED
+  paid_on         DateTime?
+  payment_mode    PaymentMode?
+  paid_by         String?
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  staff           Staff       @relation(fields: [staff_id], references: [id])
+  paid_by_user    User?       @relation(fields: [paid_by], references: [id])
+
+  @@unique([staff_id, month, year])
+  @@map("payrolls")
+}
+
+// ============ ASSETS ============
+
+enum AssetCondition {
+  GOOD
+  NEEDS_SERVICE
+  FAULTY
+}
+
+model Asset {
+  id              String        @id @default(uuid())
+  name            String
+  category        String
+  purchase_date   DateTime
+  purchase_cost   Int           // in paise
+  vendor_id       String?
+  warranty_expiry  DateTime?
+  condition       AssetCondition @default(GOOD)
+  last_service_date DateTime?
+  next_service_due DateTime?
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+
+  vendor          Vendor?       @relation(fields: [vendor_id], references: [id])
+  maintenance_logs MaintenanceLog[]
+
+  @@map("assets")
+}
+
+model MaintenanceLog {
+  id          String      @id @default(uuid())
+  asset_id    String
+  date        DateTime
+  description String
+  cost        Int         // in paise
+  vendor_id   String?
+  receipt_url String?
+  created_at  DateTime    @default(now())
+
+  asset       Asset       @relation(fields: [asset_id], references: [id])
+  vendor      Vendor?     @relation(fields: [vendor_id], references: [id])
+
+  @@map("maintenance_logs")
+}
+
+// ============ VENDORS ============
+
+model Vendor {
+  id              String      @id @default(uuid())
+  business_name   String
+  contact_person  String
+  phone           String
+  gstin           String?
+  category        String
+  bank_name       String?
+  account_number  String?
+  ifsc_code       String?
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  expenses        Expense[]
+  assets          Asset[]
+  maintenance_logs MaintenanceLog[]
+  purchase_orders PurchaseOrder[]
+
+  @@map("vendors")
+}
+
+model PurchaseOrder {
+  id              String      @id @default(uuid())
+  vendor_id       String
+  order_number    String      @unique
+  description     String
+  amount          Int         // in paise
+  status          String      @default("OPEN") // OPEN, RECEIVED, PAID, CANCELLED
+  expected_date   DateTime?
+  received_date   DateTime?
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  vendor          Vendor      @relation(fields: [vendor_id], references: [id])
+
+  @@map("purchase_orders")
+}
+
+// ============ DOCUMENTS & COMPLIANCE ============
+
+model Document {
+  id              String      @id @default(uuid())
+  type            String      // PARKING_LICENSE, TRADE_LICENSE, FIRE_NOC, PROPERTY_TAX
+  document_number String?
+  issue_date      DateTime?
+  expiry_date     DateTime?
+  scan_url        String?
+  reminder_sent   Boolean     @default(false)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  @@map("documents")
+}
+
+// ============ AUDIT LOG ============
+
+model AuditLog {
+  id            String      @id @default(uuid())
+  user_id       String
+  action        String      // CREATE, UPDATE, DELETE, APPROVE, FLAG
+  entity_type   String      // EXPENSE, PAYROLL, etc.
+  entity_id     String
+  old_value     Json?
+  new_value     Json?
+  reason        String?
+  ip_address    String?
+  created_at    DateTime    @default(now())
+
+  @@map("audit_logs")
+}
+
+// ============ CASH RECONCILIATION ============
+
+model CashReconciliation {
+  id              String      @id @default(uuid())
+  date            DateTime
+  expected_cash   Int         // in paise
+  actual_cash     Int         // in paise
+  discrepancy     Int         // in paise
+  notes           String?
+  submitted_by    String
+  created_at      DateTime    @default(now())
+
+  @@map("cash_reconciliations")
+}
+
+// ============ NOTIFICATIONS ============
+
+model Notification {
+  id            String      @id @default(uuid())
+  user_id       String
+  type          String
+  title         String
+  message       String
+  data          Json?
+  is_read       Boolean     @default(false)
+  sent_via      String[]    // IN_APP, WHATSAPP, SMS
+  created_at    DateTime    @default(now())
+
+  @@map("notifications")
+}
